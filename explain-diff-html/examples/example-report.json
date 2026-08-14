@@ -1,0 +1,253 @@
+{
+  "title": "Why retry order is now stable",
+  "slug": "retry-order",
+  "target": "main...feature/retry-order",
+  "repository": "queue-service",
+  "summary": "The queue now advances its cursor only after durable persistence succeeds, preserving retry order when a write fails.",
+  "sections": {
+    "background": [
+      {
+        "type": "heading",
+        "text": "A queue with two pieces of state"
+      },
+      {
+        "type": "paragraph",
+        "text": "Each worker handles a job payload and a cursor that identifies the next queued item. The ordering guarantee depends on those two pieces of state moving together."
+      },
+      {
+        "type": "list",
+        "ordered": false,
+        "items": [
+          "The payload records the result of the current job.",
+          "The cursor records which job should be processed next."
+        ]
+      },
+      {
+        "type": "callout",
+        "tone": "edge",
+        "title": "The failure window",
+        "text": "If the cursor moves before the payload is durable, a failed write can cause the queue to skip a job."
+      }
+    ],
+    "intuition": [
+      {
+        "type": "heading",
+        "text": "Make progress follow proof"
+      },
+      {
+        "type": "paragraph",
+        "text": "Treat successful persistence as proof that processing may advance. A failed write leaves the cursor pointing at the same job, so the next attempt observes the original order."
+      },
+      {
+        "type": "flow",
+        "title": "The successful path for job-42",
+        "nodes": [
+          {
+            "id": "worker",
+            "label": "Worker",
+            "detail": "Processes job-42"
+          },
+          {
+            "id": "store",
+            "label": "Durable store",
+            "detail": "Confirms payload commit"
+          },
+          {
+            "id": "cursor",
+            "label": "Queue cursor",
+            "detail": "Moves to job-43"
+          }
+        ],
+        "edges": [
+          {
+            "from": "worker",
+            "to": "store",
+            "label": "persist result"
+          },
+          {
+            "from": "store",
+            "to": "cursor",
+            "label": "success permits advance"
+          }
+        ]
+      },
+      {
+        "type": "mockup",
+        "title": "Retry status after a failed write",
+        "regions": [
+          {
+            "label": "Current job",
+            "content": "job-42"
+          },
+          {
+            "label": "Queue state",
+            "content": "Waiting for retry, attempt 2 of 4"
+          }
+        ]
+      }
+    ],
+    "code": [
+      {
+        "type": "heading",
+        "text": "Move cursor advancement behind persistence"
+      },
+      {
+        "type": "paragraph",
+        "text": "The worker keeps the same operations but changes their ordering. An exception from persistence now exits before the cursor assignment is reached."
+      },
+      {
+        "type": "code",
+        "language": "python",
+        "code": "store.persist(job)\nqueue.cursor = job.next_cursor",
+        "caption": "The cursor changes only after persist returns successfully."
+      },
+      {
+        "type": "callout",
+        "tone": "key",
+        "title": "Ordering invariant",
+        "text": "The cursor never identifies the next job until the current job's result is durable."
+      }
+    ]
+  },
+  "quiz": [
+    {
+      "question": "What directly prevents a failed write from skipping the current job?",
+      "options": [
+        {
+          "text": "The cursor advances only after durable persistence reports success.",
+          "correct": true,
+          "feedback": "Correct. A persistence failure exits before the cursor assignment."
+        },
+        {
+          "text": "The worker sorts each batch before dispatching queued jobs.",
+          "correct": false,
+          "feedback": "The worker consumes queue order and performs no batch sort."
+        },
+        {
+          "text": "The client retries each request before checking job status.",
+          "correct": false,
+          "feedback": "Client retry behavior does not govern the server-side cursor."
+        },
+        {
+          "text": "The scheduler duplicates each task before assigning a worker.",
+          "correct": false,
+          "feedback": "Duplicating tasks would not make cursor advancement atomic."
+        }
+      ]
+    },
+    {
+      "question": "What does the queue cursor represent after persistence fails?",
+      "options": [
+        {
+          "text": "It still identifies the failed job for another processing attempt.",
+          "correct": true,
+          "feedback": "Correct. The failed operation leaves the cursor unchanged."
+        },
+        {
+          "text": "It identifies the next job while recovery stores the result.",
+          "correct": false,
+          "feedback": "Advancing early would recreate the failure window this change removes."
+        },
+        {
+          "text": "It identifies no job until every worker becomes available.",
+          "correct": false,
+          "feedback": "Worker availability does not determine the cursor value."
+        },
+        {
+          "text": "It identifies the first job from the most recent batch.",
+          "correct": false,
+          "feedback": "The queue does not rewind to the beginning of a batch."
+        }
+      ]
+    },
+    {
+      "question": "Why is successful persistence treated as proof of progress?",
+      "options": [
+        {
+          "text": "It confirms the current result is durable before ordering advances.",
+          "correct": true,
+          "feedback": "Correct. Durable state makes moving to the next job safe."
+        },
+        {
+          "text": "It confirms every worker has completed the current queue batch.",
+          "correct": false,
+          "feedback": "Persistence confirms one result, not a batch-wide worker barrier."
+        },
+        {
+          "text": "It confirms the client has stopped retrying the current request.",
+          "correct": false,
+          "feedback": "The server's ordering guarantee is independent of client retries."
+        },
+        {
+          "text": "It confirms queued jobs are sorted by their submission time.",
+          "correct": false,
+          "feedback": "Persistence does not sort the queue or establish submission order."
+        }
+      ]
+    },
+    {
+      "question": "Which execution path leaves the cursor assignment unreachable?",
+      "options": [
+        {
+          "text": "Persistence raises an exception while storing the current result.",
+          "correct": true,
+          "feedback": "Correct. The exception exits before execution reaches cursor advancement."
+        },
+        {
+          "text": "Persistence succeeds while storing the complete current job result.",
+          "correct": false,
+          "feedback": "A successful return permits execution to reach the assignment."
+        },
+        {
+          "text": "The cursor references the current job before processing begins.",
+          "correct": false,
+          "feedback": "That is the expected starting state, not an exit path."
+        },
+        {
+          "text": "The worker receives another job after processing has completed.",
+          "correct": false,
+          "feedback": "Receiving later work occurs after the relevant assignment."
+        }
+      ]
+    },
+    {
+      "question": "Which invariant best captures the change's ordering guarantee?",
+      "options": [
+        {
+          "text": "The current result becomes durable before the cursor moves forward.",
+          "correct": true,
+          "feedback": "Correct. This ordering closes the job-skipping failure window."
+        },
+        {
+          "text": "The current cursor moves forward before each worker starts processing.",
+          "correct": false,
+          "feedback": "Moving first could skip work when later persistence fails."
+        },
+        {
+          "text": "The current batch completes before any result becomes durable.",
+          "correct": false,
+          "feedback": "Results are persisted per job rather than after an entire batch."
+        },
+        {
+          "text": "The current client retries before the scheduler assigns more work.",
+          "correct": false,
+          "feedback": "Client retries and scheduler assignment do not define this invariant."
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "path": "src/queue/worker.py",
+      "start_line": 40,
+      "end_line": 52,
+      "label": "Persistence followed by cursor advancement"
+    },
+    {
+      "path": "tests/queue/test_worker.py",
+      "start_line": 81,
+      "end_line": 104,
+      "label": "Failed writes preserve the current cursor"
+    }
+  ]
+}
