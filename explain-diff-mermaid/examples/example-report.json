@@ -1,0 +1,53 @@
+{
+  "title":"Retries preserve order (fictional example)",
+  "slug":"retry-order",
+  "target":"main...retry-order (illustrative)",
+  "repository":"fictional-queue-service",
+  "summary":"Persistence must succeed before cursor advancement. Source references in this example are fictional.",
+  "sections":{
+    "background":[{"type":"paragraph","text":"A worker processes job-42. Its cursor identifies the current job, while the store holds completed results."}],
+    "intuition":[
+      {"type":"paragraph","text":"On failure the cursor stays at job-42. On success, storing its result permits advancement to job-43. The flow shows dependencies; the sequence shows interaction order."},
+      {"type":"flow","title":"Success permits progress","nodes":[{"id":"worker","label":"Worker","detail":"job-42"},{"id":"store","label":"Store","detail":"Durable result"}],"edges":[{"from":"worker","to":"store","label":"Persist result"}]},
+      {"type":"sequence","title":"Successful persistence","participants":[{"id":"worker","label":"Worker"},{"id":"store","label":"Store"}],"messages":[{"from":"worker","to":"store","label":"Persist job-42","kind":"request"},{"from":"store","to":"worker","label":"Commit succeeded","kind":"response"}]}
+    ],
+    "code":[
+      {"type":"paragraph","text":"In fictional src/worker.py lines 40–41, persistence returns before cursor assignment. An exception exits before advancement. A crash between these operations can still cause repeated processing."},
+      {"type":"code","language":"python","code":"store.persist(job)\nqueue.cursor = job.next_cursor","caption":"Illustrative implementation"},
+      {"type":"callout","tone":"key","title":"Invariant","text":"The current result becomes durable before the cursor advances."}
+    ]
+  },
+  "quiz":[
+    {"question":"What closes the job-skipping failure window?","options":[
+      {"text":"The cursor advances after persistence confirms durable storage.","correct":true,"feedback":"Failed persistence exits before the assignment."},
+      {"text":"The worker sorts jobs before attempting durable storage.","correct":false,"feedback":"Sorting does not govern advancement."},
+      {"text":"The client retries requests before checking worker status.","correct":false,"feedback":"Client retries do not govern the cursor."},
+      {"text":"The scheduler duplicates jobs before assigning available workers.","correct":false,"feedback":"Duplication does not close the failure window."}
+    ]},
+    {"question":"Where does the cursor point after persistence raises?","options":[
+      {"text":"It identifies the current job for another attempt.","correct":true,"feedback":"The assignment was never reached."},
+      {"text":"It identifies the next job for immediate processing.","correct":false,"feedback":"Advancing would recreate the skip."},
+      {"text":"It identifies the first job in every batch.","correct":false,"feedback":"There is no batch rewind."},
+      {"text":"It identifies no job until all workers stop.","correct":false,"feedback":"Worker availability is unrelated."}
+    ]},
+    {"question":"What does a successful persistence response establish?","options":[
+      {"text":"The current result is durable before advancement begins.","correct":true,"feedback":"The store has confirmed the write."},
+      {"text":"Every active worker has finished its assigned batch.","correct":false,"feedback":"There is no worker barrier."},
+      {"text":"The requesting client has stopped sending retry attempts.","correct":false,"feedback":"The response says nothing about clients."},
+      {"text":"All pending jobs are sorted by submission time.","correct":false,"feedback":"Persistence does not sort jobs."}
+    ]},
+    {"question":"Which path avoids the cursor assignment?","options":[
+      {"text":"Persistence raises while storing the current job result.","correct":true,"feedback":"The exception prevents reaching the assignment."},
+      {"text":"Persistence returns after storing the current job result.","correct":false,"feedback":"The assignment follows the return."},
+      {"text":"The worker starts with the current job selected.","correct":false,"feedback":"That is normal initial state."},
+      {"text":"The queue receives a new job during processing.","correct":false,"feedback":"Receiving work does not cause this exit."}
+    ]},
+    {"question":"What risk remains if the worker crashes after persistence?","options":[
+      {"text":"The current job may run again before advancement.","correct":true,"feedback":"A crash before assignment leaves the old cursor, permitting repeated work."},
+      {"text":"The next job must disappear from durable storage.","correct":false,"feedback":"No operation removes the next job."},
+      {"text":"Every queued job must lose its stored result.","correct":false,"feedback":"The change does not erase results."},
+      {"text":"The client must receive a successful retry response.","correct":false,"feedback":"A crash guarantees no such response."}
+    ]}
+  ],
+  "references":[{"path":"src/worker.py","start_line":40,"end_line":41,"label":"Fictional persist-before-advance example"}]
+}
